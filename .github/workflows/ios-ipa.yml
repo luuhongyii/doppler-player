@@ -1,0 +1,72 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+  # 配置好 Secrets 后，可取消下面注释以在 push 时自动打包
+  # push:
+  #   branches: [main, master]
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check secrets
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+        run: |
+          missing=0
+          [ -z "$APPLE_ID" ] && echo "::error::缺少 Secret: APPLE_ID" && missing=1
+          [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] && echo "::error::缺少 Secret: APPLE_APP_SPECIFIC_PASSWORD" && missing=1
+          [ -z "$DEVELOPMENT_TEAM" ] && echo "::error::缺少 Secret: DEVELOPMENT_TEAM" && missing=1
+          if [ "$missing" = "1" ]; then
+            echo "配置说明: docs/GITHUB-IPA.md"
+            exit 1
+          fi
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler-cache: true
+
+      - name: Install Fastlane
+        run: bundle install
+
+      - name: Build signed IPA
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+          APP_BUNDLE_ID: ${{ secrets.APP_BUNDLE_ID }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
+          FASTLANE_SKIP_UPDATE_CHECK: "1"
+          FASTLANE_DISABLE_ANIMATION: "1"
+          FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "120"
+          FASTLANE_XCODEBUILD_SETTINGS_RETRIES: "6"
+        run: bundle exec fastlane build_ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DopplerPlayer-ipa
+          path: build/DopplerPlayer.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          echo "### IPA 构建成功" >> "$GITHUB_STEP_SUMMARY"
+          echo "在 **Artifacts** 中下载 \`DopplerPlayer-ipa\` → \`DopplerPlayer.ipa\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "用 **Sideloadly** 安装到 iPhone（免费 Apple ID 约 7 天需重签）" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,77 @@
+# GitHub Actions：普通 Apple ID + 应用专用密码 → Development IPA
+
+default_platform(:ios)
+
+platform :ios do
+  desc "签名并导出 Development IPA（供 Sideloadly 安装）"
+  lane :build_ipa do
+    setup_ci(force: true)
+
+    bundle_id = ENV["APP_BUNDLE_ID"] || "com.doppler.player"
+    team_id = ENV["DEVELOPMENT_TEAM"]
+    apple_id = ENV["APPLE_ID"]
+    keychain_password = ENV["KEYCHAIN_PASSWORD"] || "ci_temp_keychain_pass"
+
+    UI.user_error!("请设置 GitHub Secret: APPLE_ID") if apple_id.to_s.empty?
+    UI.user_error!("请设置 GitHub Secret: APPLE_APP_SPECIFIC_PASSWORD") if ENV["APPLE_APP_SPECIFIC_PASSWORD"].to_s.empty?
+    UI.user_error!("请设置 GitHub Secret: DEVELOPMENT_TEAM") if team_id.to_s.empty?
+
+    ENV["FASTLANE_USER"] = apple_id
+    ENV["FASTLANE_PASSWORD"] = ENV["APPLE_APP_SPECIFIC_PASSWORD"]
+
+    create_keychain(
+      name: "ci-build.keychain",
+      password: keychain_password,
+      default_keychain: true,
+      unlock: true,
+      timeout: 0
+    )
+
+    UI.message("获取开发证书…")
+    get_certificates(
+      development: true,
+      username: apple_id,
+      team_id: team_id,
+      keychain_name: "ci-build.keychain",
+      keychain_password: keychain_password
+    )
+
+    UI.message("获取描述文件…")
+    get_provisioning_profile(
+      development: true,
+      app_identifier: bundle_id,
+      username: apple_id,
+      team_id: team_id,
+      force: true
+    )
+
+    profile_name = lane_context[SharedValues::SIGH_NAME]
+
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path: "DopplerPlayer.xcodeproj",
+      team_id: team_id,
+      targets: ["DopplerPlayer"],
+      bundle_identifier: bundle_id,
+      profile_name: profile_name,
+      code_sign_identity: "Apple Development"
+    )
+
+    build_app(
+      project: "DopplerPlayer.xcodeproj",
+      scheme: "DopplerPlayer",
+      configuration: "Release",
+      export_method: "development",
+      output_directory: "./build",
+      output_name: "DopplerPlayer.ipa",
+      clean: true,
+      export_options: {
+        provisioningProfiles: {
+          bundle_id => profile_name
+        }
+      }
+    )
+
+    UI.success("IPA: #{lane_context[SharedValues::IPA_OUTPUT_PATH]}")
+  end
+end
