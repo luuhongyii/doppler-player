@@ -7,6 +7,59 @@ on:
   #   branches: [main, master]
 
 jobs:
+  build-unsigned-ipa:
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project DopplerPlayer.xcodeproj \
+            -scheme DopplerPlayer \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name 'DopplerPlayer.app' -path '*Release-iphoneos*' 2>/dev/null | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::DopplerPlayer.app not found in DerivedData"
+            exit 1
+          fi
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          (cd build && zip -qry DopplerPlayer-unsigned.ipa Payload)
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DopplerPlayer-unsigned-ipa
+          path: build/DopplerPlayer-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          echo "### Unsigned IPA 构建成功" >> "$GITHUB_STEP_SUMMARY"
+          echo "在 **Artifacts** 中下载 \`DopplerPlayer-unsigned-ipa\`。" >> "$GITHUB_STEP_SUMMARY"
+          echo "这个 IPA 需要用 **Sideloadly**、AltStore 或类似工具用你的 Apple ID 重新签名后安装。" >> "$GITHUB_STEP_SUMMARY"
+
   build-ipa:
     runs-on: macos-15
     timeout-minutes: 60
@@ -22,29 +75,35 @@ jobs:
           DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
         run: |
           missing=0
-          [ -z "$APPLE_ID" ] && echo "::error::缺少 Secret: APPLE_ID" && missing=1
-          [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] && echo "::error::缺少 Secret: APPLE_APP_SPECIFIC_PASSWORD" && missing=1
-          [ -z "$DEVELOPMENT_TEAM" ] && echo "::error::缺少 Secret: DEVELOPMENT_TEAM" && missing=1
+          [ -z "$APPLE_ID" ] && echo "缺少 Secret: APPLE_ID" && missing=1
+          [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] && echo "缺少 Secret: APPLE_APP_SPECIFIC_PASSWORD" && missing=1
+          [ -z "$DEVELOPMENT_TEAM" ] && echo "缺少 Secret: DEVELOPMENT_TEAM" && missing=1
           if [ "$missing" = "1" ]; then
-            echo "配置说明: docs/GITHUB-IPA.md"
-            exit 1
+            echo "HAS_SIGNING=false" >> "$GITHUB_ENV"
+            echo "未配置完整 Apple secrets，跳过 signed IPA；unsigned IPA job 仍会生成可供 Sideloadly 重签的 IPA。"
+          else
+            echo "HAS_SIGNING=true" >> "$GITHUB_ENV"
           fi
 
       - name: Setup Xcode
+        if: env.HAS_SIGNING == 'true'
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
 
       - name: Setup Ruby
+        if: env.HAS_SIGNING == 'true'
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.2"
           bundler-cache: true
 
       - name: Install Fastlane
+        if: env.HAS_SIGNING == 'true'
         run: bundle install
 
       - name: Build signed IPA
+        if: env.HAS_SIGNING == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -58,6 +117,7 @@ jobs:
         run: bundle exec fastlane build_ipa
 
       - name: Upload IPA artifact
+        if: env.HAS_SIGNING == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: DopplerPlayer-ipa
@@ -66,7 +126,14 @@ jobs:
           retention-days: 30
 
       - name: Summary
+        if: env.HAS_SIGNING == 'true'
         run: |
           echo "### IPA 构建成功" >> "$GITHUB_STEP_SUMMARY"
           echo "在 **Artifacts** 中下载 \`DopplerPlayer-ipa\` → \`DopplerPlayer.ipa\`" >> "$GITHUB_STEP_SUMMARY"
           echo "用 **Sideloadly** 安装到 iPhone（免费 Apple ID 约 7 天需重签）" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Signed IPA skipped
+        if: env.HAS_SIGNING != 'true'
+        run: |
+          echo "### Signed IPA 已跳过" >> "$GITHUB_STEP_SUMMARY"
+          echo "仓库未配置完整 Apple secrets。请下载 unsigned IPA artifact，并用 Sideloadly 在本机重签安装。" >> "$GITHUB_STEP_SUMMARY"
